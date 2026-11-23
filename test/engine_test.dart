@@ -18,7 +18,6 @@ void expectClose(double actual, double expected, [String? msg]) {
 
 void main() {
   group('基础函数（对齐 MyTT 语义）', () {
-    // C = [1,2,3,4,5]
     final c = <double>[1.0, 2, 3, 4, 5];
 
     test('MA 窗口未满为 NaN', () {
@@ -30,7 +29,6 @@ void main() {
     });
 
     test('EMA span=N adjust=False：alpha=2/(N+1)', () {
-      // N=3 → alpha=0.5：e0=1, e1=1.5, e2=2.25, e3=3.125, e4=4.0625
       final e = EMA(c, 3);
       expectClose(e[0], 1.0);
       expectClose(e[1], 1.5);
@@ -40,7 +38,6 @@ void main() {
     });
 
     test('SMA(X,3,1) 通达信递推：alpha=1/3', () {
-      // y0=1, y1=(2+2*1)/3=4/3, y2=(3+2*4/3)/3=17/9, y3=(4+2*17/9)/3=70/27
       final s = SMA(c, 3, 1);
       expectClose(s[0], 1.0);
       expectClose(s[1], 4 / 3);
@@ -91,9 +88,7 @@ void main() {
       expect(m.dif.length, 60);
       expect(m.dea.length, 60);
       expect(m.macd.length, 60);
-      // DIF = EMA12 - EMA26，前若干根 EMA26 有效后才有值
       expect(m.dif[0], closeTo(0.0, eps));
-      // MACD = 2*(DIF-DEA)
       expectClose(m.macd[30], 2 * (m.dif[30] - m.dea[30]));
     });
 
@@ -118,7 +113,6 @@ void main() {
     }
 
     test('① MACD 金叉', () {
-      // 构造：前期下跌后反转 → 最后一天 DIF 上穿 DEA
       final closes = <double>[
         20, 19.5, 19, 18.5, 18, 17.5, 17, 16.8, 16.5, 16.2,
         16.0, 16.1, 16.3, 16.6, 17.0, 17.5, 18.0, 18.6, 19.2, 19.8,
@@ -126,7 +120,6 @@ void main() {
       ];
       final f = CompiledFormula.compile(
           'DIF:=EMA(CLOSE,12)-EMA(CLOSE,26);\nDEA:=EMA(DIF,9);\nXG:CROSS(DIF,DEA);');
-      // 判定放宽到最近 15 根：长期下跌后的反转初期应出现金叉
       final desc = f.evalSignal(makeKline(closes), mode: 'RECENT_N', recentN: 15);
       expect(desc, isNotNull, reason: '反转初期应出现 MACD 金叉');
     });
@@ -142,11 +135,9 @@ void main() {
     });
 
     test('③ 缩量回踩 20 日线', () {
-      // 收盘价紧贴 20 日线波动、成交量指数萎缩 → 命中
       final closes = List<double>.generate(
           40, (i) => 10 + 0.01 * (i % 5) - 0.005 * (i % 3));
       final k = makeKline(closes);
-      // 指数递减的成交量满足 VOL < MA(VOL,5)*0.8
       for (var i = 0; i < k.vol.length; i++) {
         k.vol[i] = 1000 * pow(0.85, i).toDouble();
       }
@@ -195,11 +186,24 @@ void main() {
       expect(out.containsKey('XG'), isTrue);
     });
 
+    test('变量名含数字（zhan5 类命名）', () {
+      // 回归：标识符后续字符须含数字，不能把一个名字切成"标识符+数字"两段
+      final f = CompiledFormula.compile('zhan5 = count(close > 0, 5)\nxg = zhan5 >= 5');
+      final k = makeKline(List<double>.generate(10, (i) => i + 1.0));
+      expect(f.eval(k).containsKey('XG'), isTrue);
+    });
+
+    test('表达式内 = 作等于比较（通达信习惯写法）', () {
+      final f = CompiledFormula.compile('xg = ref(close, 1) = ref(close, 2)');
+      final k = makeKline(const <double>[1.0, 2, 2, 3]);
+      final out = f.eval(k);
+      expect(out['XG']![2], 0.0, reason: '第3根=2、第1根=1，不等');
+      expect(out['XG']![3], 1.0, reason: '第4根=3 与第2根=2… ref(close,2) 取第2根=2，第3根 close=2，相等');
+    });
+
     test('最近 N 根信号判定', () {
       final f = CompiledFormula.compile('XG:CLOSE>REF(CLOSE,1);');
       final closes = <double>[1.0, 2, 3, 4, 5, 4, 4, 4, 4, 4];
-      // 只有中间有上涨，LAST_BAR 不命中，RECENT_N(5) 也不命中，
-      // RECENT_N(8) 应命中（第 1-4 根内）
       final k = makeKline(closes);
       expect(f.evalSignal(k), isNull);
       expect(f.evalSignal(k, mode: 'RECENT_N', recentN: 8), isNotNull);
@@ -208,7 +212,6 @@ void main() {
   });
 
   group('未来函数族（语义对齐通达信官方说明）', () {
-    // 手工推导基准序列：拐点为 谷@0=100 → 峰@2=120 → 谷@4=96 → 峰@6=115 → 谷@8=95
     final x = <double>[100.0, 110, 120, 108, 96, 105, 115, 103, 95, 108];
 
     test('ZIG 阶梯输出', () {
