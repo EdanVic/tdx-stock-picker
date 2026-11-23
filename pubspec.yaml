@@ -1,7 +1,7 @@
 name: stock_picker_app
 description: 通达信风格本地策略选股工具（手机端 MVP）
 publish_to: 'none'
-version: 2.2.1+14
+version: 2.2.2+15
 
 environment:
   sdk: '>=3.4.0 <4.0.0'

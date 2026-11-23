@@ -39,9 +39,7 @@ class AiConverter {
     required String foreignCode,
     required String syntaxGuide,
   }) async {
-    if (apiKey.isEmpty) {
-      throw AiConvertException('未配置 API 密钥（设置页 → AI 公式转换）');
-    }
+    _checkConfig();
     if (foreignCode.trim().isEmpty) throw AiConvertException('请粘贴要转换的公式');
 
     final system = StringBuffer()
@@ -79,19 +77,31 @@ class AiConverter {
 
   /// 连通测试：发送最小请求，返回模型回复内容；失败抛 [AiConvertException]。
   Future<String> ping() async {
-    if (apiKey.isEmpty) throw AiConvertException('未配置 API 密钥');
+    _checkConfig();
     final reply = await _chat(const [
       {'role': 'user', 'content': 'ping'}
     ], maxTokens: 8, temperature: 1);
     return reply.trim().isEmpty ? '连接成功' : reply.trim();
   }
 
+  /// 配置预检：API 地址 / 密钥 / 模型缺一不可。
+  void _checkConfig() {
+    if (baseUrl.trim().isEmpty) {
+      throw AiConvertException('未配置接口地址（设置页 → AI 公式转换 → 接口地址）');
+    }
+    if (apiKey.trim().isEmpty) {
+      throw AiConvertException('未配置 API 密钥（设置页 → AI 公式转换）');
+    }
+    if (model.trim().isEmpty) {
+      throw AiConvertException('未配置模型（设置页 → AI 公式转换 → 模型，'
+          '如 kimi-for-coding / moonshot-v1-8k）');
+    }
+  }
+
   /// 发送一次 chat 请求并解析回复内容。
   Future<String> _chat(List<Map<String, String>> messages,
       {int? maxTokens, double? temperature}) async {
-    if (apiKey.isEmpty) {
-      throw AiConvertException('未配置 API 密钥（设置页 → AI 公式转换）');
-    }
+    _checkConfig();
     var base = baseUrl.trim();
     if (base.endsWith('/')) base = base.substring(0, base.length - 1);
     final uri = Uri.parse('$base/chat/completions');
@@ -112,11 +122,11 @@ class AiConverter {
                 'Authorization': 'Bearer $apiKey',
               },
               body: jsonEncode(payload))
-          .timeout(const Duration(seconds: 90));
+          .timeout(const Duration(seconds: 180));
     } on TimeoutException {
-      throw AiConvertException('请求超时（90 秒），请检查网络或稍后重试');
+      throw AiConvertException('请求超时（180 秒），请检查网络或稍后重试');
     } catch (e) {
-      throw AiConvertException('网络错误：$e');
+      throw AiConvertException('网络错误（${uri.host}）：$e');
     }
 
     if (resp.statusCode != 200) {
@@ -155,7 +165,7 @@ class AiConverter {
         .where((s) => s.isNotEmpty)
         .toList();
     if (blocks.isNotEmpty) return blocks.last;
-    // 无代码块：逐行去掉"说明："行
+    // 无代码块：逐行去掉"说明：…"行
     return reply
         .split('\n')
         .where((l) => !l.trimLeft().startsWith('说明：'))
