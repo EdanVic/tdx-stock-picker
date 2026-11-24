@@ -334,4 +334,38 @@ void main() {
       expect(out['XG']!.length, 30);
     });
   });
+
+  group('真实用户公式回归', () {
+    // SG 支撑线回踩策略（用户 V2.2.3 提供）：TR 手写 + EMA 代 DMA + BBI + 回踩
+    // 曾因此公式发现括号笔误导致"位置73多余)"，整体编译/求值作回归
+    const sg = 'zhongjia = (high + low) / 2\n'
+        'tr = max(max(high - low, abs(high - ref(close, 1))), abs(low - ref(close, 1)))\n'
+        'atrv = ma(tr, 10)\n'
+        'dma_zhongjia = ema(zhongjia, 9)\n'
+        'dma_atr = ema(atrv, 9)\n'
+        'zhichi_yuan = dma_zhongjia - 1.5 * dma_atr\n'
+        'zhichi = (ref(zhichi_yuan, 1) + ref(zhichi_yuan, 2) + ref(zhichi_yuan, 3) + ref(zhichi_yuan, 4) + ref(zhichi_yuan, 5) + ref(zhichi_yuan, 6) + ref(zhichi_yuan, 7) + ref(zhichi_yuan, 8) + ref(zhichi_yuan, 9) + 10 * zhichi_yuan) / 20\n'
+        'bbi = (ma(close, 3) + ma(close, 6) + ma(close, 12) + ma(close, 24)) / 4\n'
+        'zhan5 = count(close > bbi, 5) >= 5\n'
+        'guanzhu = zhan5 and (ref(zhan5, 1) == 0)\n'
+        'dip = low < zhichi\n'
+        'xg = dip and (ref(count(dip, 30), 1) == 0) and (count(guanzhu, 30) >= 1)';
+
+    test('SG 支撑线回踩公式：编译、无未来函数、可求值', () {
+      final f = CompiledFormula.compile(sg);
+      expect(f.outputs, contains('XG'));
+      expect(f.hasFutureFunctions, isFalse);
+      final n = 120;
+      final closes = List<double>.generate(n, (i) => 10 + (i % 7 - 3) * 0.1);
+      final k = KlineData(
+        List<double>.generate(n, (i) => closes[i] - 0.2),
+        List<double>.from(closes),
+        List<double>.generate(n, (i) => closes[i] + 0.2),
+        closes,
+        List<double>.filled(n, 1000),
+        List<String>.generate(n, (i) => '$i'),
+      );
+      expect(f.eval(k)['XG']!.length, n);
+    });
+  });
 }
