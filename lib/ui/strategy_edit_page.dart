@@ -128,17 +128,19 @@ class _StrategyEditPageState extends State<StrategyEditPage> {
             tooltip: 'AI 转换填入',
             icon: const Icon(Icons.auto_awesome_outlined),
             onPressed: () async {
-              final code = await showDialog<String>(
+              final result = await showDialog<({String code, bool validated})>(
                 context: context,
                 builder: (_) => AiConvertDialog(settingsStore: widget.appState.scanController.settingsStore),
               );
-              if (code != null && mounted) {
+              if (result != null && mounted) {
                 setState(() {
-                  _formula.text = code;
+                  _formula.text = result.code;
                   _syntaxError = null;
                 });
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text('AI 公式已填入，可点"语法检查"验证'),
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text(result.validated
+                        ? 'AI 公式已填入（引擎编译校验通过）'
+                        : 'AI 公式已填入，但编译未通过，请手动修正'),
                     behavior: SnackBarBehavior.floating));
               }
             },
@@ -354,6 +356,10 @@ class _AiConvertDialogState extends State<AiConvertDialog> {
   String _reply = ''; // 模型原始回复（说明 + 代码块）
   String? _error;
   bool _busy = false;
+  String _phase = ''; // 进行中状态（转换/自动修正第几轮）
+  bool _validated = false; // 最终结果是否通过本机引擎编译
+  int _attempts = 0; // AI 共尝试几轮（含自动修正）
+  String? _compileError; // 未通过时的编译错误
 
   @override
   void dispose() {
@@ -366,6 +372,10 @@ class _AiConvertDialogState extends State<AiConvertDialog> {
       _busy = true;
       _error = null;
       _reply = '';
+      _phase = 'AI 转换中…';
+      _validated = false;
+      _attempts = 0;
+      _compileError = null;
     });
     try {
       final store = widget.settingsStore;
@@ -375,15 +385,28 @@ class _AiConvertDialogState extends State<AiConvertDialog> {
         apiKey: await store.loadAiApiKey(),
         model: await store.loadAiModel(),
       );
-      final reply = await converter.convert(
-          foreignCode: _input.text, syntaxGuide: guide);
-      setState(() => _reply = reply);
+      final result = await converter.convertWithFix(
+        foreignCode: _input.text,
+        syntaxGuide: guide,
+        onRound: (round, total) {
+          if (mounted) {
+            setState(() => _phase = '编译未通过，正让 AI 自我修正（第 $round/$total 轮）…');
+          }
+        },
+      );
+      setState(() {
+        _reply = result.reply;
+        _validated = result.validated;
+        _attempts = result.attempts;
+        _compileError = result.compileError;
+      });
     } on AiConvertException catch (e) {
       setState(() => _error = e.toString());
     } catch (e) {
       setState(() => _error = 'AI 转换失败：$e');
     } finally {
       if (mounted) setState(() => _busy = false);
+      _phase = '';
     }
   }
 
@@ -398,7 +421,7 @@ class _AiConvertDialogState extends State<AiConvertDialog> {
         return;
       }
     }
-    Navigator.pop(context, code);
+    Navigator.pop(context, (code: code, validated: _validated));
   }
 
   @override
@@ -434,7 +457,7 @@ class _AiConvertDialogState extends State<AiConvertDialog> {
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.auto_awesome, size: 18),
-              label: Text(_busy ? '转换中…' : 'AI 转换'),
+              label: Text(_busy && _phase.isNotEmpty ? _phase : 'AI 转换'),
             ),
             if (_error != null) ...[
               const SizedBox(height: 8),
@@ -469,6 +492,34 @@ class _AiConvertDialogState extends State<AiConvertDialog> {
                 child: SelectableText(
                   code,
                   style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: _validated
+                      ? Colors.green.shade50
+                      : Colors.orange.shade50,
+                  border: Border.all(
+                      color: _validated
+                          ? Colors.green.shade300
+                          : Colors.orange.shade300),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  _validated
+                      ? '✓ 已通过本机公式引擎编译校验'
+                          '${_attempts > 1 ? '（AI 自我修正 ${_attempts - 1} 轮后通过）' : ''}'
+                      : '✗ 编译未通过（已自动修正 ${_attempts - 1} 轮）\n'
+                          '${_compileError ?? ''}\n可点"仍要填入"后手动修改。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: _validated
+                        ? Colors.green.shade900
+                        : Colors.orange.shade900,
+                  ),
                 ),
               ),
             ],
