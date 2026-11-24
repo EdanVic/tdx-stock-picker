@@ -111,4 +111,101 @@ void main() {
       expect(AiConverter.extractNote('```\nx```'), '');
     });
   });
+
+  group('convertWithFix（编译校验 + 自动纠错）', () {
+    http.Response okReply(String content) => http.Response.bytes(
+        utf8.encode(jsonEncode({
+          'choices': [
+            {'message': {'content': content}}
+          ]
+        })),
+        200);
+
+    AiConverter makeConverter(http.Client client) => AiConverter(
+        baseUrl: 'https://api.test/v1',
+        apiKey: 'sk-x',
+        model: 'm1',
+        client: client);
+
+    test('首次即编译通过：1 轮结束，validated=true', () async {
+      var calls = 0;
+      final client = MockClient((request) async {
+        calls++;
+        return okReply('说明：无\n```\nxg = close > ref(close, 1)\n```');
+      });
+      final r = await makeConverter(client).convertWithFix(
+          foreignCode: 'XG:C>REF(C,1);', syntaxGuide: 'g');
+      expect(r.validated, isTrue);
+      expect(r.attempts, 1);
+      expect(r.code, 'xg = close > ref(close, 1)');
+      expect(r.compileError, isNull);
+      expect(calls, 1, reason: '通过则不应再请求');
+    });
+
+    test('首次有错、二次修正成功：编译错误回喂模型', () async {
+      final bodies = <String>[];
+      final rounds = <String>[];
+      final client = MockClient((request) async {
+        bodies.add(request.body);
+        if (bodies.length == 1) {
+          // 括号不闭合：引擎必报错
+          return okReply('说明：无\n```\nxg = (close + 1\n```');
+        }
+        return okReply('说明：已修正括号\n```\nxg = close + 1 > 0\n```');
+      });
+      final r = await makeConverter(client).convertWithFix(
+        foreignCode: 'XG:C+1>0;',
+        syntaxGuide: 'g',
+        onRound: (round, total) => rounds.add('$round/$total'),
+      );
+      expect(r.validated, isTrue);
+      expect(r.attempts, 2);
+      expect(bodies.length, 2);
+      expect(rounds, ['1/2'], reason: '第 1 轮修正前回调一次');
+      final fix = jsonDecode(bodies[1]) as Map<String, dynamic>;
+      final msgs = fix['messages'] as List;
+      expect(msgs.length, 4, reason: 'system+user+assistant(错稿)+user(纠错指令)');
+      final fixInstr = msgs[3]['content'] as String;
+      expect(fixInstr, contains('编译报错'), reason: '须带编译错误原文');
+      expect(fixInstr, contains('语法规范'));
+    });
+
+    test('持续有错：修正 2 轮后放弃，validated=false 且带错误', () async {
+      var calls = 0;
+      final client = MockClient((request) async {
+        calls++;
+        return okReply('说明：无\n```\nxg = (close + 1\n```');
+      });
+      final r = await makeConverter(client).convertWithFix(
+          foreignCode: 'x', syntaxGuide: 'g');
+      expect(r.validated, isFalse);
+      expect(r.attempts, 3, reason: '1 次初转 + 2 轮修正');
+      expect(r.compileError, isNotNull);
+      expect(calls, 3);
+    });
+
+    test('temperature 兼容：纠错轮内仍走 temperature 回退', () async {
+      final bodies = <String>[];
+      final client = MockClient((request) async {
+        bodies.add(request.body);
+        if (bodies.length == 1) {
+          return okReply('说明：无\n```\nxg = (close + 1\n```');
+        }
+        if (bodies.length == 2) {
+          return http.Response.bytes(
+              utf8.encode(jsonEncode({
+                'error': {'message': 'invalid temperature: only 1 is allowed'}
+              })),
+              400);
+        }
+        return okReply('说明：无\n```\nxg = close > 0\n```');
+      });
+      final r = await makeConverter(client).convertWithFix(
+          foreignCode: 'x', syntaxGuide: 'g');
+      expect(r.validated, isTrue);
+      expect(r.attempts, 2);
+      final retry = jsonDecode(bodies[2]) as Map<String, dynamic>;
+      expect(retry['temperature'], 1);
+    });
+  });
 }
