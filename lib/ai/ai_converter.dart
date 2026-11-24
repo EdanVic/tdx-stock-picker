@@ -3,6 +3,10 @@
 /// 通过 OpenAI 兼容的 /chat/completions 接口调用（Moonshot Kimi、
 /// DeepSeek 等均兼容）。语法规范文档（assets/ai_syntax.md）随包内置，
 /// 整体作为 system 提示词的一部分发给模型，保证改写结果可编译。
+///
+/// [convertWithFix] 在转换后用本机公式引擎编译校验：不通过则把编译
+/// 报错原文回喂模型自我修正，最多 [maxFixRounds] 轮，只把编译通过的
+/// 结果标记为 validated，避免把语法错误的公式直接交给用户。
 library;
 
 import 'dart:async';
@@ -10,12 +14,40 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../engine/formula.dart';
+
 /// AI 调用失败。
 class AiConvertException implements Exception {
   final String message;
   AiConvertException(this.message);
   @override
   String toString() => 'AI 转换失败：$message';
+}
+
+/// convertWithFix 的结果。
+class ConvertResult {
+  /// 最终一轮模型的原始回复（含"说明："行与 ``` 代码块）。
+  final String reply;
+
+  /// 从 [reply] 提取出的公式代码。
+  final String code;
+
+  /// 共发起几轮转换/修正（1 = 首次即通过）。
+  final int attempts;
+
+  /// 最终代码是否通过本机公式引擎编译。
+  final bool validated;
+
+  /// 未通过时的编译错误原文（null 表示通过）。
+  final String? compileError;
+
+  const ConvertResult({
+    required this.reply,
+    required this.code,
+    required this.attempts,
+    required this.validated,
+    this.compileError,
+  });
 }
 
 /// OpenAI 兼容的公式转换客户端。
@@ -41,7 +73,63 @@ class AiConverter {
   }) async {
     _checkConfig();
     if (foreignCode.trim().isEmpty) throw AiConvertException('请粘贴要转换的公式');
+    return _chatWithTempFallback(_buildMessages(foreignCode, syntaxGuide));
+  }
 
+  /// 转换 + 本机引擎编译校验 + 自动纠错。
+  ///
+  /// 流程：首次转换 → 提取代码用 [CompiledFormula.compile] 校验 →
+  /// 失败则把编译报错回喂模型要求只修正代码块（保持原策略逻辑与参数），
+  /// 最多 [maxFixRounds] 轮。返回最终结果，[ConvertResult.validated]
+  /// 为 false 时 [ConvertResult.compileError] 是最后一轮的编译错误。
+  ///
+  /// [onRound] 在每轮修正发起前回调（round 从 1 计，total = maxFixRounds）。
+  Future<ConvertResult> convertWithFix({
+    required String foreignCode,
+    required String syntaxGuide,
+    int maxFixRounds = 2,
+    void Function(int round, int total)? onRound,
+  }) async {
+    _checkConfig();
+    if (foreignCode.trim().isEmpty) throw AiConvertException('请粘贴要转换的公式');
+    final messages = _buildMessages(foreignCode, syntaxGuide);
+    var attempts = 0;
+    while (true) {
+      attempts++;
+      final reply = await _chatWithTempFallback(messages);
+      final code = extractCode(reply);
+      try {
+        CompiledFormula.compile(code);
+        return ConvertResult(
+            reply: reply, code: code, attempts: attempts, validated: true);
+      } on FormulaException catch (e) {
+        if (attempts > maxFixRounds) {
+          return ConvertResult(
+            reply: reply,
+            code: code,
+            attempts: attempts,
+            validated: false,
+            compileError: e.toString(),
+          );
+        }
+        onRound?.call(attempts, maxFixRounds);
+        messages
+          ..add({'role': 'assistant', 'content': reply})
+          ..add({
+            'role': 'user',
+            'content': '你上一步给出的公式在本 APP 的公式引擎里编译报错：\n'
+                '$e\n'
+                '请修正代码块中的公式：只允许使用语法规范中列出的常量、函数与写法，'
+                '保持原策略的逻辑与参数不变；修正后重新输出完整公式的 ``` 代码块。'
+                '除代码块与"说明："行外不要输出任何内容。',
+          });
+      }
+    }
+  }
+
+  /// 构造首轮对话消息：system（转换专家 + 语法规范）+ user（原文）。
+  List<Map<String, String>> _buildMessages(
+      String foreignCode, String syntaxGuide) {
     final system = StringBuffer()
       ..writeln('你是一名股票技术指标公式转换专家。用户会给你一段来自其他炒股软件'
           '（通达信、同花顺、大智慧、文华、聚宽、Python 量化代码等）的选股公式或策略代码。')
@@ -59,20 +147,10 @@ class AiConverter {
       ..writeln('2. 然后输出一个 ``` 包裹的代码块，代码块内是完整公式；除此之外不要输出任何内容。')
       ..writeln('3. 保留原策略的参数与逻辑含义，不要自行优化或添加新条件。');
 
-    final messages = [
+    return [
       {'role': 'system', 'content': system.toString()},
       {'role': 'user', 'content': foreignCode},
     ];
-    // 注意：部分模型（如 Kimi 订阅版 k 系列）固定 temperature=1，
-    // 首请求不发 temperature；若服务端仍报错则带 temperature=1 重试一次
-    try {
-      return await _chat(messages);
-    } on AiConvertException catch (e) {
-      if (e.message.toLowerCase().contains('temperature')) {
-        return await _chat(messages, temperature: 1);
-      }
-      rethrow;
-    }
   }
 
   /// 连通测试：发送最小请求，返回模型回复内容；失败抛 [AiConvertException]。
@@ -95,6 +173,20 @@ class AiConverter {
     if (model.trim().isEmpty) {
       throw AiConvertException('未配置模型（设置页 → AI 公式转换 → 模型，'
           '如 kimi-for-coding / moonshot-v1-8k）');
+    }
+  }
+
+  /// 发送 chat 请求；若服务端报 temperature 限制则带 temperature=1 重试一次。
+  /// 注意：部分模型（如 Kimi 订阅版 k 系列）固定 temperature=1，
+  /// 首请求不发 temperature。
+  Future<String> _chatWithTempFallback(List<Map<String, String>> messages) async {
+    try {
+      return await _chat(messages);
+    } on AiConvertException catch (e) {
+      if (e.message.toLowerCase().contains('temperature')) {
+        return await _chat(messages, temperature: 1);
+      }
+      rethrow;
     }
   }
 
