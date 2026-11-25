@@ -336,7 +336,7 @@ class CompiledFormula {
 
   static const _knownFuncs = {
     'MA': 2, 'EMA': 2, 'SMA': 3, 'REF': 2, 'LLV': 2, 'HHV': 2,
-    'SUM': 2, 'COUNT': 2, 'ABS': 1, 'MAX': 2, 'MIN': 2,
+    'SUM': 2, 'COUNT': 2, 'BARSLAST': 1, 'ABS': 1, 'MAX': 2, 'MIN': 2,
     'IF': 3, 'CROSS': 2,
     // 未来函数族（语义对齐通达信官方说明，见 functions.dart）
     'ZIG': 2, 'ZIGA': 2, 'BACKSET': 2, 'REFX': 2,
@@ -595,6 +595,8 @@ extension CompiledFormulaEval on CompiledFormula {
         return SUM(s(0), _intArg(argNodes, args, 1));
       case 'COUNT':
         return COUNT(s(0), _intArg(argNodes, args, 1));
+      case 'BARSLAST':
+        return BARSLAST(s(0));
       case 'ABS':
         return ABS(s(0));
       case 'MAX':
