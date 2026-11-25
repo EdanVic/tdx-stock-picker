@@ -169,6 +169,19 @@ List<double> COUNT(List<double> cond, int n) {
   return out;
 }
 
+/// BARSLAST：上一次条件成立到当前的周期数。cond 非 0 的当根输出 0，
+/// 此前从未成立为 NaN。只回看历史，非未来函数（语义对齐通达信）。
+List<double> BARSLAST(List<double> cond) {
+  final len = cond.length;
+  final out = List<double>.filled(len, kNaN);
+  var last = -1;
+  for (var i = 0; i < len; i++) {
+    if (cond[i] != 0 && _isValid(cond[i])) last = i;
+    if (last >= 0) out[i] = (i - last).toDouble();
+  }
+  return out;
+}
+
 /// 条件选择：cond 非 0 取 a，否则取 b。
 List<double> IFF(List<double> cond, List<double> a, List<double> b) {
   final len = cond.length;
