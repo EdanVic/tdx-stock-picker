@@ -24,6 +24,11 @@ class AiConvertException implements Exception {
   String toString() => 'AI 转换失败：$message';
 }
 
+/// 转换模式：
+/// - [rewrite]：把用户粘贴的其他软件公式改写为本 APP 语法（保留原逻辑参数）；
+/// - [generate]：用户只用自然语言描述选股条件，AI 从零写出公式。
+enum AiConvertMode { rewrite, generate }
+
 /// convertWithFix 的结果。
 class ConvertResult {
   /// 最终一轮模型的原始回复（含"说明："行与 ``` 代码块）。
@@ -66,14 +71,17 @@ class AiConverter {
 
   /// 将 [foreignCode]（任意来源的公式/策略代码）改写为本 APP 公式。
   /// [syntaxGuide] 为 assets/ai_syntax.md 的全文。
+  /// [mode] 为 generate 时，[foreignCode] 是自然语言描述而非已有公式。
   /// 返回模型原始回复（含"说明："行与 ``` 代码块）。
   Future<String> convert({
     required String foreignCode,
     required String syntaxGuide,
+    AiConvertMode mode = AiConvertMode.rewrite,
   }) async {
     _checkConfig();
     if (foreignCode.trim().isEmpty) throw AiConvertException('请粘贴要转换的公式');
-    return _chatWithTempFallback(_buildMessages(foreignCode, syntaxGuide));
+    return _chatWithTempFallback(
+        _buildMessages(foreignCode, syntaxGuide, mode));
   }
 
   /// 转换 + 本机引擎编译校验 + 自动纠错。
@@ -87,12 +95,13 @@ class AiConverter {
   Future<ConvertResult> convertWithFix({
     required String foreignCode,
     required String syntaxGuide,
+    AiConvertMode mode = AiConvertMode.rewrite,
     int maxFixRounds = 2,
     void Function(int round, int total)? onRound,
   }) async {
     _checkConfig();
     if (foreignCode.trim().isEmpty) throw AiConvertException('请粘贴要转换的公式');
-    final messages = _buildMessages(foreignCode, syntaxGuide);
+    final messages = _buildMessages(foreignCode, syntaxGuide, mode);
     var attempts = 0;
     while (true) {
       attempts++;
@@ -127,25 +136,47 @@ class AiConverter {
     }
   }
 
-  /// 构造首轮对话消息：system（转换专家 + 语法规范）+ user（原文）。
+  /// 构造首轮对话消息：system（任务说明 + 语法规范）+ user（原文/需求描述）。
   List<Map<String, String>> _buildMessages(
-      String foreignCode, String syntaxGuide) {
-    final system = StringBuffer()
-      ..writeln('你是一名股票技术指标公式转换专家。用户会给你一段来自其他炒股软件'
-          '（通达信、同花顺、大智慧、文华、聚宽、Python 量化代码等）的选股公式或策略代码。')
-      ..writeln('请将其改写为"tdx选股药丸"APP 的选股公式。语法规范如下，'
-          '必须严格遵守，只使用规范中列出的常量、函数与写法：')
-      ..writeln()
-      ..writeln('====语法规范开始====')
-      ..write(syntaxGuide.trim())
-      ..writeln()
-      ..writeln('====语法规范结束====')
-      ..writeln()
-      ..writeln('输出要求：')
-      ..writeln('1. 先写一行以"说明："开头的简短转换说明（等价改写、无法保留的功能等），'
-          '不超过 100 字；没有需要说明的写"说明：无"。')
-      ..writeln('2. 然后输出一个 ``` 包裹的代码块，代码块内是完整公式；除此之外不要输出任何内容。')
-      ..writeln('3. 保留原策略的参数与逻辑含义，不要自行优化或添加新条件。');
+      String foreignCode, String syntaxGuide, AiConvertMode mode) {
+    final system = StringBuffer();
+    if (mode == AiConvertMode.generate) {
+      system
+        ..writeln('用户会用自然语言描述他想要的选股条件（描述可能不完整、不精确，'
+            '甚至只是大概意图，例如"底部放量""回踩 20 日线不破"）。')
+        ..writeln('你的任务：直接为用户写出一个"tdx选股药丸"APP 的选股公式，'
+            '满足用户描述的条件。必须严格遵守下方语法规范，只使用规范中列出的'
+            '常量、函数与写法：')
+        ..writeln()
+        ..writeln('====语法规范开始====')
+        ..write(syntaxGuide.trim())
+        ..writeln()
+        ..writeln('====语法规范结束====')
+        ..writeln()
+        ..writeln('输出要求：')
+        ..writeln('1. 先写一行以"说明："开头的简短说明（公式逻辑、参数默认值取值），'
+            '不超过 100 字。')
+        ..writeln('2. 然后输出一个 ``` 包裹的代码块，代码块内是完整公式；除此之外不要输出任何内容。')
+        ..writeln('3. 用户描述中明确的参数必须照用；未给出的参数取常见合理默认值'
+            '（如均线周期 20、放量倍数 2、回踩容忍度 2%），并在"说明："中写明。');
+    } else {
+      system
+        ..writeln('你是一名股票技术指标公式转换专家。用户会给你一段来自其他炒股软件'
+            '（通达信、同花顺、大智慧、文华、聚宽、Python 量化代码等）的选股公式或策略代码。')
+        ..writeln('请将其改写为"tdx选股药丸"APP 的选股公式。语法规范如下，'
+            '必须严格遵守，只使用规范中列出的常量、函数与写法：')
+        ..writeln()
+        ..writeln('====语法规范开始====')
+        ..write(syntaxGuide.trim())
+        ..writeln()
+        ..writeln('====语法规范结束====')
+        ..writeln()
+        ..writeln('输出要求：')
+        ..writeln('1. 先写一行以"说明："开头的简短转换说明（等价改写、无法保留的功能等），'
+            '不超过 100 字；没有需要说明的写"说明：无"。')
+        ..writeln('2. 然后输出一个 ``` 包裹的代码块，代码块内是完整公式；除此之外不要输出任何内容。')
+        ..writeln('3. 保留原策略的参数与逻辑含义，不要自行优化或添加新条件。');
+    }
 
     return [
       {'role': 'system', 'content': system.toString()},
