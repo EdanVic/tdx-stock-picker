@@ -32,6 +32,7 @@ class HelpPage extends StatelessWidget {
           'hhv(x, n)   最近 N 根最高值\n'
           'sum(x, n)   最近 N 根求和\n'
           'count(x, n) 最近 N 根内 x 非 0 的天数\n'
+          'barslast(c) 上一次 c 成立到当前的周期数（当根为 0，从未成立为无效值）\n'
           'cross(a, b) a 上穿 b\n'
           'if(c, a, b) 条件选择\n'
           'abs(x) 绝对值   max(a, b) 取大   min(a, b) 取小\n'
