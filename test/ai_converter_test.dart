@@ -184,6 +184,29 @@ void main() {
       expect(calls, 3);
     });
 
+    test('generate 模式：system 按需求生成而非改写，user 为自然语言描述', () async {
+      String? capturedBody;
+      final client = MockClient((request) async {
+        capturedBody = request.body;
+        return okReply('说明：创 20 日新低后放量上涨\n'
+            '```\n'
+            'll = llv(low, 20)\n'
+            'xg = low <= ll and close > ref(close, 1) and volume > ma(volume, 5) * 2\n'
+            '```');
+      });
+      final r = await makeConverter(client).convertWithFix(
+          foreignCode: '底部放量',
+          syntaxGuide: 'g',
+          mode: AiConvertMode.generate);
+      expect(r.validated, isTrue);
+      final sent = jsonDecode(capturedBody!) as Map<String, dynamic>;
+      final msgs = sent['messages'] as List;
+      final sys = msgs[0]['content'] as String;
+      expect(sys, contains('自然语言描述'));
+      expect(sys, isNot(contains('转换专家')), reason: '生成模式不应使用改写提示词');
+      expect(msgs[1]['content'], '底部放量');
+    });
+
     test('temperature 兼容：纠错轮内仍走 temperature 回退', () async {
       final bodies = <String>[];
       final client = MockClient((request) async {
