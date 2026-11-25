@@ -380,7 +380,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const ListTile(
             leading: Icon(Icons.tag),
             title: Text('版本'),
-            subtitle: Text('V2.2.4 · tdx选股药丸'),
+            subtitle: Text('V2.3.0 · tdx选股药丸'),
           ),
         ],
       ),
