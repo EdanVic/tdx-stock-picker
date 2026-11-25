@@ -353,6 +353,7 @@ class AiConvertDialog extends StatefulWidget {
 
 class _AiConvertDialogState extends State<AiConvertDialog> {
   final _input = TextEditingController();
+  AiConvertMode _mode = AiConvertMode.rewrite;
   String _reply = ''; // 模型原始回复（说明 + 代码块）
   String? _error;
   bool _busy = false;
@@ -388,6 +389,7 @@ class _AiConvertDialogState extends State<AiConvertDialog> {
       final result = await converter.convertWithFix(
         foreignCode: _input.text,
         syntaxGuide: guide,
+        mode: _mode,
         onRound: (round, total) {
           if (mounted) {
             setState(() => _phase = '编译未通过，正让 AI 自我修正（第 $round/$total 轮）…');
@@ -435,16 +437,37 @@ class _AiConvertDialogState extends State<AiConvertDialog> {
         child: ListView(
           shrinkWrap: true,
           children: [
-            const Text('粘贴其他软件（通达信/同花顺/聚宽等）的公式或策略代码：'),
+            SegmentedButton<AiConvertMode>(
+              segments: const [
+                ButtonSegment(
+                  value: AiConvertMode.rewrite,
+                  label: Text('改写已有公式'),
+                  icon: Icon(Icons.swap_horiz, size: 18),
+                ),
+                ButtonSegment(
+                  value: AiConvertMode.generate,
+                  label: Text('描述条件生成'),
+                  icon: Icon(Icons.edit_note, size: 18),
+                ),
+              ],
+              selected: {_mode},
+              onSelectionChanged: (s) => setState(() => _mode = s.first),
+            ),
+            const SizedBox(height: 8),
+            Text(_mode == AiConvertMode.rewrite
+                ? '粘贴其他软件（通达信/同花顺/聚宽等）的公式或策略代码：'
+                : '用大白话描述你想要的选股条件，AI 直接帮你写公式，例如"底部放量""回踩 20 日线不破"：'),
             const SizedBox(height: 8),
             TextField(
               controller: _input,
               maxLines: null,
               minLines: 4,
               style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                hintText: 'MA5:=MA(C,5);\nMA10:=MA(C,10);\nXG:CROSS(MA5,MA10);',
+              decoration: InputDecoration(
+                border: const OutlineInputBorder(),
+                hintText: _mode == AiConvertMode.rewrite
+                    ? 'MA5:=MA(C,5);\nMA10:=MA(C,10);\nXG:CROSS(MA5,MA10);'
+                    : '股价创 20 日新低后首次放量上涨，成交量是 5 日均量 2 倍以上',
                 isDense: true,
               ),
             ),
