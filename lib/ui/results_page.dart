@@ -197,24 +197,68 @@ class _ResultsPageState extends State<ResultsPage> {
   }
 }
 
-class ResultDetailPage extends StatelessWidget {
+class ResultDetailPage extends StatefulWidget {
   final ScanResult result;
   const ResultDetailPage({super.key, required this.result});
 
-  /// 导出 CSV（UTF-8 with BOM，Excel 兼容）并分享。
+  @override
+  State<ResultDetailPage> createState() => _ResultDetailPageState();
+}
+
+class _ResultDetailPageState extends State<ResultDetailPage> {
+  final _store = ResultStore();
+  late final List<StockPick> _picks = List.of(widget.result.picks);
+
+  /// 删除单个标的并落盘；SnackBar 提供撤销。
+  Future<void> _removePick(int index) async {
+    final p = _picks[index];
+    setState(() => _picks.removeAt(index));
+    await _persist();
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context)
+      ..clearSnackBars();
+    messenger.showSnackBar(SnackBar(
+      content: Text('已删除 ${p.name} (${p.code})'),
+      behavior: SnackBarBehavior.floating,
+      action: SnackBarAction(
+        label: '撤销',
+        onPressed: () async {
+          setState(() => _picks.insert(index.clamp(0, _picks.length), p));
+          await _persist();
+        },
+      ),
+    ));
+  }
+
+  /// 将当前（可能被删改过的）列表写回结果文件，hitCount 同步更新。
+  Future<void> _persist() async {
+    final r = widget.result;
+    await _store.save(ScanResult(
+      id: r.id,
+      strategyId: r.strategyId,
+      strategyName: r.strategyName,
+      finishedAt: r.finishedAt,
+      totalScanned: r.totalScanned,
+      fetchFailed: r.fetchFailed,
+      hitCount: _picks.length,
+      picks: List.of(_picks),
+    ));
+  }
+
+  /// 导出 CSV（UTF-8 with BOM，Excel 兼容）并分享。导出当前列表（含手动删除后的）。
   Future<void> _exportCsv(BuildContext context) async {
     final buf = StringBuffer('﻿代码,名称,收盘价,信号说明,信号时间\n');
     // 注意：字符串首字符为 ﻿ BOM，保证 Excel 正确识别 UTF-8
-    for (final p in result.picks) {
+    for (final p in _picks) {
       buf.writeln('${p.code},${p.name},${p.close},${p.signalDesc},${p.klineTime}');
     }
     final dir = await getTemporaryDirectory();
     final file = File(
-        '${dir.path}/${result.strategyName}_${result.id}.csv');
+        '${dir.path}/${widget.result.strategyName}_${widget.result.id}.csv');
     await file.writeAsBytes(Uint8List.fromList(utf8.encode(buf.toString())));
     if (context.mounted) {
       await Share.shareXFiles([XFile(file.path)],
-          subject: '选股结果：${result.strategyName}');
+          subject: '选股结果：${widget.result.strategyName}');
     }
   }
 
@@ -222,7 +266,7 @@ class ResultDetailPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('${result.strategyName} · 命中${result.hitCount}只'),
+        title: Text('${widget.result.strategyName} · 命中${_picks.length}只'),
         actions: [
           IconButton(
             tooltip: '导出 CSV / 分享',
@@ -231,22 +275,33 @@ class ResultDetailPage extends StatelessWidget {
           ),
         ],
       ),
-      body: result.picks.isEmpty
-          ? const Center(child: Text('本次没有股票命中'))
+      body: _picks.isEmpty
+          ? const Center(child: Text('列表已清空（全部手动删除）'))
           : ListView.separated(
               padding: const EdgeInsets.all(12),
-              itemCount: result.picks.length,
+              itemCount: _picks.length,
               separatorBuilder: (_, __) => const SizedBox(height: 6),
               itemBuilder: (context, i) {
-                final p = result.picks[i];
+                final p = _picks[i];
                 return Card(
                   child: ListTile(
                     title: Text('${p.name} (${p.code})'),
                     subtitle: Text('${p.signalDesc} · ${p.klineTime}'),
-                    trailing: Text(
-                      p.close.toStringAsFixed(2),
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w600, fontSize: 16),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          p.close.toStringAsFixed(2),
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 16),
+                        ),
+                        IconButton(
+                          tooltip: '从结果中删除',
+                          icon: const Icon(Icons.remove_circle_outline,
+                              size: 20),
+                          onPressed: () => _removePick(i),
+                        ),
+                      ],
                     ),
                     onTap: () {
                       Navigator.push(
