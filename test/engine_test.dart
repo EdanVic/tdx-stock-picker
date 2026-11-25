@@ -72,6 +72,17 @@ void main() {
       expectClose(cnt[4], 2.0);
     });
 
+    test('BARSLAST：上一次成立到当前的周期数', () {
+      final cond = <double>[0.0, 1, 0, 0, 1, 0, 0, 0];
+      final b = BARSLAST(cond);
+      expectClose(b[0], double.nan, '从未成立为 NaN');
+      expectClose(b[1], 0.0, '当根为 0');
+      expectClose(b[2], 1.0);
+      expectClose(b[3], 2.0);
+      expectClose(b[4], 0.0, '再次成立重置');
+      expectClose(b[7], 3.0);
+    });
+
     test('CROSS：A 上穿 B（严格定义）', () {
       final a = <double>[1.0, 2, 1, 2, 2];
       final b = <double>[2.0, 1, 1, 1, 2];
@@ -366,6 +377,26 @@ void main() {
         List<String>.generate(n, (i) => '$i'),
       );
       expect(f.eval(k)['XG']!.length, n);
+    });
+
+    test('SG 原版 BARSLAST 回踩写法：编译、无未来函数、可求值', () {
+      // 用户原始通达信写法：COUNT(LOW<支撑线, BARSLAST(关注信号))
+      // 与固定 30 根窗口版互为近似，此处验证 barslast 语义可用
+      final f = CompiledFormula.compile('$sg\n'
+          'bs = barslast(guanzhu)\n'
+          'xg2 = dip and bs >= 0 and bs <= 30');
+      expect(f.hasFutureFunctions, isFalse);
+      final n = 120;
+      final closes = List<double>.generate(n, (i) => 10 + (i % 7 - 3) * 0.1);
+      final k = KlineData(
+        List<double>.generate(n, (i) => closes[i] - 0.2),
+        List<double>.from(closes),
+        List<double>.generate(n, (i) => closes[i] + 0.2),
+        closes,
+        List<double>.filled(n, 1000),
+        List<String>.generate(n, (i) => '$i'),
+      );
+      expect(f.eval(k)['XG2']!.length, n);
     });
   });
 }
