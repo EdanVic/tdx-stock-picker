@@ -7,8 +7,11 @@ import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../analysis/returns.dart';
 import '../app_state.dart';
 import '../models/models.dart';
+import '../quote/quote_provider.dart';
+import '../quote/tencent_provider.dart';
 import '../storage/storage.dart';
 import 'kline_chart.dart';
 
@@ -184,8 +187,9 @@ class _ResultsPageState extends State<ResultsPage> {
                             Navigator.push(
                               context,
                               MaterialPageRoute(
-                                  builder: (_) =>
-                                      ResultDetailPage(result: r)),
+                                  builder: (_) => ResultDetailPage(
+                                      result: r,
+                                      appState: widget.appState)),
                             ).then((_) => _refresh());
                           }
                         },
@@ -199,7 +203,8 @@ class _ResultsPageState extends State<ResultsPage> {
 
 class ResultDetailPage extends StatefulWidget {
   final ScanResult result;
-  const ResultDetailPage({super.key, required this.result});
+  final AppState appState;
+  const ResultDetailPage({super.key, required this.result, required this.appState});
 
   @override
   State<ResultDetailPage> createState() => _ResultDetailPageState();
@@ -208,6 +213,18 @@ class ResultDetailPage extends StatefulWidget {
 class _ResultDetailPageState extends State<ResultDetailPage> {
   final _store = ResultStore();
   late final List<StockPick> _picks = List.of(widget.result.picks);
+
+  // ---- 收益测算状态 ----
+  bool _measuring = false;
+  bool _cancelMeasure = false;
+  bool _measureDialogOpen = false;
+  final _measureProgress = ValueNotifier<String>('准备中…');
+
+  @override
+  void dispose() {
+    _measureProgress.dispose();
+    super.dispose();
+  }
 
   /// 删除单个标的并落盘；SnackBar 提供撤销。
   Future<void> _removePick(int index) async {
@@ -245,6 +262,164 @@ class _ResultDetailPageState extends State<ResultDetailPage> {
     ));
   }
 
+  QuoteProvider _providerFor(String source) => switch (source) {
+        SettingsStore.kTencent => TencentProvider(),
+        SettingsStore.kEastMoney => EastMoneyProvider(),
+        _ => MultiSourceProvider(TencentProvider(), EastMoneyProvider()),
+      };
+
+  /// 收益测算：当前列表 → 最新行情，弹窗展示平均收益与逐只明细。
+  Future<void> _calcReturns() async {
+    if (_measuring) return;
+    if (_picks.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('列表为空，没有可测算的标的'),
+          behavior: SnackBarBehavior.floating));
+      return;
+    }
+    setState(() => _measuring = true);
+    _cancelMeasure = false;
+    _measureProgress.value = '准备中…';
+    _measureDialogOpen = true;
+    // 进度对话框（可取消，不随点击外部关闭）
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('收益测算'),
+        content: ValueListenableBuilder<String>(
+          valueListenable: _measureProgress,
+          builder: (_, text, __) => Text(text),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => _cancelMeasure = true,
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+    ReturnsReport? report;
+    String? error;
+    try {
+      final store = widget.appState.scanController.settingsStore;
+      final conc = await store.loadConcurrency();
+      final source = await store.loadDataSource();
+      final client = QuoteClient(_providerFor(source),
+          concurrency: conc,
+          minInterval: Duration(milliseconds: (1000 / conc).round()));
+      final stocks = _picks
+          .map((p) => StockInfo(code: p.code, market: p.market, name: p.name))
+          .toList();
+      final klines = await client.fetchKlines(stocks, 'day', 5,
+          isCancelled: () => _cancelMeasure,
+          onProgress: (done, ok, failed) => _measureProgress.value =
+              '拉取最新行情：$done/${stocks.length}（失败 $failed）');
+      if (!_cancelMeasure) report = buildReport(_picks, klines);
+    } catch (e) {
+      error = e.toString();
+    } finally {
+      if (_measureDialogOpen && mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+      _measureDialogOpen = false;
+      if (mounted) setState(() => _measuring = false);
+    }
+    if (!mounted || _cancelMeasure) return;
+    if (error != null) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('收益测算失败'),
+          content: SelectableText(error!),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx), child: const Text('知道了'))
+          ],
+        ),
+      );
+    } else if (report != null) {
+      _showReport(report);
+    }
+  }
+
+  /// 展示收益报告：平均收益率 + 正收益占比 + 逐只明细。
+  void _showReport(ReturnsReport r) {
+    final baseDate = DateFormat('yyyy-MM-dd').format(widget.result.finishedAt);
+    final avg = r.average;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('策略收益测算'),
+        content: SizedBox(
+          width: 480,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              Text('区间：$baseDate（选股）→ ${r.latestTime}（最新行情）',
+                  style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 8),
+              Text(
+                avg == null
+                    ? '无有效标的'
+                    : '平均收益率 ${avg >= 0 ? '+' : ''}${avg.toStringAsFixed(2)}%',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: avg == null
+                      ? null
+                      : (avg >= 0 ? Colors.red : Colors.green),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '正收益 ${r.items.where((e) => e.rate > 0).length}/${r.items.length} 只'
+                '${r.failedCodes.isNotEmpty ? ' · 取数失败 ${r.failedCodes.length} 只（未计入平均）' : ''}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              if (r.best != null && r.items.length > 1)
+                Text(
+                  '最高 ${r.best!.pick.name} ${r.best!.rate.toStringAsFixed(2)}% · '
+                  '最低 ${r.worst!.pick.name} ${r.worst!.rate.toStringAsFixed(2)}%',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              const Divider(height: 20),
+              ...r.items.map((e) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '${e.pick.name}  ${e.baseClose.toStringAsFixed(2)} → ${e.latestClose.toStringAsFixed(2)}',
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ),
+                        Text(
+                          '${e.rate >= 0 ? '+' : ''}${e.rate.toStringAsFixed(2)}%',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: e.rate >= 0 ? Colors.red : Colors.green,
+                          ),
+                        ),
+                      ],
+                    ),
+                  )),
+              const Divider(height: 16),
+              Text(
+                '基准价=选股信号 K 线收盘价；最新价=最新日线收盘价（盘中为实时价）。'
+                '仅供评估策略历史表现，不构成投资建议。',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('知道了'))
+        ],
+      ),
+    );
+  }
+
   /// 导出 CSV（UTF-8 with BOM，Excel 兼容）并分享。导出当前列表（含手动删除后的）。
   Future<void> _exportCsv(BuildContext context) async {
     final buf = StringBuffer('﻿代码,名称,收盘价,信号说明,信号时间\n');
@@ -268,6 +443,11 @@ class _ResultDetailPageState extends State<ResultDetailPage> {
       appBar: AppBar(
         title: Text('${widget.result.strategyName} · 命中${_picks.length}只'),
         actions: [
+          IconButton(
+            tooltip: '收益测算（列表至今平均收益）',
+            icon: const Icon(Icons.percent),
+            onPressed: _measuring ? null : _calcReturns,
+          ),
           IconButton(
             tooltip: '导出 CSV / 分享',
             icon: const Icon(Icons.ios_share),
